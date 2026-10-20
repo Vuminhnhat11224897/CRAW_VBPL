@@ -7,13 +7,14 @@ Anything that cannot be produced with the same certainty raises Quarantine inste
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .contracts import authority_key, normalize_metadata
 from . import dates as datelib
 from . import ocr
+from . import reader
 from .extract import extract_metadata
 from .structure import build_chunks, parse
-from .text import read_document
 
 ORIGIN = "crawler"
 
@@ -50,23 +51,24 @@ def cross_check(meta, record):
         raise Quarantine("metadata_conflict", "; ".join(problems))
 
 
-def read_text(path):
-    """Text layer first; scans go to Vintern OCR. Returns (text, report, pages_for_dates)."""
+def read_text(path, folder=None, *, record=None):
+    """Choose native/OCR per page and stop before extraction if review is needed."""
+    path = Path(path)
+    folder = Path(folder) if folder is not None else path.parent / 'ocr_work' / path.stem
     try:
-        text, report = read_document(path, None)
-        return text, report, datelib.pdf_items(path)
-    except ValueError as exc:
-        if exc.__class__.__name__ != "NeedsOCR":
-            raise Quarantine("unreadable", str(exc)) from None
-    try:
-        ocr.health()
-        text, report = ocr.ocr_text(path)
-        boxes = ocr.ocr_boxes(path)
+        text, report, pages = reader.read(path, folder, record=record)
     except ocr.OCRUnavailable as exc:
         raise Quarantine("ocr_unavailable", str(exc)) from None
-    except ValueError as exc:
+    except ocr.OCRConfigurationError as exc:
+        raise Quarantine("ocr_config_invalid", str(exc)) from None
+    except ocr.OCRRejected as exc:
         raise Quarantine("ocr_failed", str(exc)) from None
-    return text, report, [boxes[0], boxes[-1]] if len(boxes) > 1 else boxes
+    except ValueError as exc:
+        raise Quarantine("unreadable", str(exc)) from None
+    if report.get('review_pages'):
+        raise Quarantine('ocr_needs_review',
+                         f"pages {report['review_pages']}; evidence: {folder / 'ocr-review.json'}")
+    return text, report, pages
 
 
 def resolve_dates(record, meta, pages, warnings):
@@ -92,9 +94,9 @@ def resolve_dates(record, meta, pages, warnings):
 def prepare(record, root, catalog, work):
     """Read text, extract metadata with the LLM, parse structure. No ID needed yet; safe to run in parallel."""
     path, digest = pick_pdf(record, root)
-    text, report, pages = read_text(path)
     folder = work / digest
     folder.mkdir(parents=True, exist_ok=True)
+    text, report, pages = read_text(path, folder, record=record)
     try:
         meta, evidence, warnings = extract_metadata(text, catalog, folder)
     except Exception as exc:  # LLM down, schema/evidence rejected three times, ...

@@ -1,9 +1,10 @@
-"""Bounded PDF/DOCX text reading, identical to the v2 writer's native (non-OCR) path."""
+"""Bounded PDF/DOCX reading with the v2 writer's native layout rules."""
 # Vendored from data_vbpl (legal_ingest) commit 22d9796. Keep logic identical to the ES v2 writer;
 # only the changes marked "CRAWLER:" differ. See docs/adr/0001-v3-cluster-v2-schema.md.
 
 import os
 import re
+import threading
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
@@ -11,6 +12,10 @@ from collections import Counter
 from pathlib import Path
 
 from .structure import normalize
+
+# Serialize MuPDF operations used by the exporter's document threads. Network I/O
+# runs outside this lock; each thread keeps ownership of its own Document.
+PDF_LOCK = threading.RLock()
 
 W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 
@@ -169,81 +174,148 @@ def docx_text(path):
 
 
 
-def pdf_text(path, folder, progress=lambda *args: None):
+def page_ocr_reasons(page, items):
+    """CRAWLER: share the native reader's page routing with the hybrid reader."""
     import pymupdf
-    document = pymupdf.open(path)
-    if document.is_encrypted:
-        raise ValueError('Password-protected PDF is not supported')
-    if not 0 < len(document) <= int(os.getenv('REALTIME_MAX_PAGES','1000')):
-        raise ValueError('PDF exceeds REALTIME_MAX_PAGES')
-    report = {'pages':len(document), 'ocr_pages':[], 'method':'text_layer', 'warnings':[]}
-    pages, repeated = [], Counter()
-    for page in document:
-        blocks = page.get_text('dict')['blocks']
-        items = []
-        for block in blocks:
-            for line in block.get('lines',[]):
-                text = ''.join(span['text'] for span in line['spans']).strip()
-                if text:
-                    box = line['bbox']; items.append((box,text))
-                    if box[1] < page.rect.height * .08 or box[3] > page.rect.height * .92:
-                        repeated[re.sub(r'\d','',text)] += 1
-        pages.append(items)
-    output = []
-    for i,page in enumerate(document):
-        progress(i+1,len(document))
-        native = page.get_text('text')
-        valid = sum(c.isalnum() or c.isspace() or c in '.,;:()/-' for c in native)/max(1,len(native))
-        image_area = sum(pymupdf.Rect(info['bbox']).get_area() for info in page.get_image_info())/max(1,page.rect.get_area())
-        body_boxes=[box for box,_ in pages[i] if page.rect.height*.25<box[1]<page.rect.height*.85]
-        left=[box for box in body_boxes if box[0]<page.rect.width*.2 and box[2]<page.rect.width*.55]
-        right=[box for box in body_boxes if box[0]>page.rect.width*.5]
-        multicolumn=len(left)>=4 and len(right)>=4 and min(max(b[3] for b in left),max(b[3] for b in right))-max(min(b[1] for b in left),min(b[1] for b in right))>page.rect.height*.2
-        needs_ocr = multicolumn or (content_length(native)<50 and (not native.strip() or image_area>.05)) or valid<.85 or (image_area>.55 and content_length(native)<2000)
-        if needs_ocr:
-            # CRAWLER: v2 reads such pages with LLM vision OCR. Accuracy comes first, so report instead of guessing.
-            raise NeedsOCR(i+1)
-        candidate_tables = [
-            table for table in page.find_tables().tables
-            if 2 <= table.col_count <= 20 and table.row_count >= 2
-            and ((table.bbox[2] - table.bbox[0]) / max(1, table.col_count)) >= 25
-        ]
-        table_boxes = [pymupdf.Rect(table.bbox) for table in candidate_tables]
-        lines = []
-        for box,text in pages[i]:
-            rect = pymupdf.Rect(box)
-            if any(table.intersects(rect) and table.contains(rect.tl) for table in table_boxes):
-                continue
-            page_number = re.fullmatch(r'(?:Trang\s*)?-?\s*\d+(?:/\d+)?\s*-?',text)
-            edge = rect.y0<page.rect.height*.08 or rect.y1>page.rect.height*.92
-            if edge and (page_number or (len(document)>1 and repeated[re.sub(r'\d','',text)]>len(document)/2)):
-                continue
-            lines.append((rect.y0,rect.x0,rect.y1,text))
-        for table in candidate_tables:
-            rows = ['| '+' | '.join(' '.join((value or '').split()).replace('|','\\|') for value in row)+' |' for row in table.extract()]
-            lines.append((table.bbox[1],table.bbox[0],table.bbox[3],'\n'.join(rows)))
-        lines.sort(key=lambda item:(round(item[0]/3),item[1]))
-        # Handle two-column headers; OCR is the fallback for complex layouts.
-        header = [line for line in lines if i==0 and line[0]<page.rect.height*.24]
-        if any(line[1]>page.rect.width*.5 for line in header):
-            lines = sorted(header,key=lambda item:(item[1]>page.rect.width*.5,item[0])) + [line for line in lines if line not in header]
-        text_lines = []
-        structural = re.compile(r'^(Điều\b|Chương\b|Mục\b|\d+[a-zđ]?\.\s|[a-zđ][a-zđ0-9]?\)\s|PHỤ LỤC|Phụ lục|Căn cứ|Nơi nhận|[-+•|])',re.I)
-        previous = None
-        for y,x,bottom,text in lines:
-            if (previous and text_lines and not structural.match(text) and not text.isupper()
-                and not text_lines[-1].endswith(('.',':',';','!','?','|')) and abs(x-previous[1])<35
-                and 0<=y-previous[2]<max(4,(previous[2]-previous[0])*.6)):
-                text_lines[-1] += ' '+text
-            else:
-                text_lines.append(text)
-            previous = (y,x,bottom)
-        output.append('\n'.join(text_lines))
-    document.close()
-    text = normalize('\n\n'.join(output))
-    if content_length(text)<50:
-        raise ValueError('Document has insufficient readable text')
-    return text,report
+    native = page.get_text('text')
+    valid = sum(c.isalnum() or c.isspace() or c in '.,;:()/-' for c in native) / max(1, len(native))
+    image_area = sum(pymupdf.Rect(info['bbox']).get_area() for info in page.get_image_info()) / max(1, page.rect.get_area())
+    body = [box for box, _ in items if page.rect.height * .25 < box[1] < page.rect.height * .85]
+    left = [box for box in body if box[0] < page.rect.width * .2 and box[2] < page.rect.width * .55]
+    right = [box for box in body if box[0] > page.rect.width * .5]
+    multicolumn = (len(left) >= 4 and len(right) >= 4 and
+                  min(max(b[3] for b in left), max(b[3] for b in right)) -
+                  max(min(b[1] for b in left), min(b[1] for b in right)) > page.rect.height * .2)
+    reasons = []
+    if multicolumn:
+        reasons.append('complex_layout')
+    if content_length(native) < 50 and (not native.strip() or image_area > .05):
+        reasons.append('little_text')
+    if valid < .85:
+        reasons.append('unreadable_text')
+    if image_area > .55 and content_length(native) < 2000:
+        reasons.append('scan_image')
+    return reasons
+
+
+def native_page_text(page, items, repeated, page_count):
+    """Native layout/line joining from the vendored reader, unchanged."""
+    import pymupdf
+    candidate_tables = [
+        table for table in page.find_tables().tables
+        if 2 <= table.col_count <= 20 and table.row_count >= 2
+        and ((table.bbox[2] - table.bbox[0]) / max(1, table.col_count)) >= 25
+    ]
+    table_boxes = [pymupdf.Rect(table.bbox) for table in candidate_tables]
+    lines = []
+    for box,text in items:
+        rect = pymupdf.Rect(box)
+        if any(table.intersects(rect) and table.contains(rect.tl) for table in table_boxes):
+            continue
+        page_number = re.fullmatch(r'(?:Trang\s*)?-?\s*\d+(?:/\d+)?\s*-?',text)
+        edge = rect.y0<page.rect.height*.08 or rect.y1>page.rect.height*.92
+        if edge and (page_number or (page_count>1 and repeated[re.sub(r'\d','',text)]>page_count/2)):
+            continue
+        lines.append((rect.y0,rect.x0,rect.y1,text))
+    for table in candidate_tables:
+        rows = ['| '+' | '.join(' '.join((value or '').split()).replace('|','\\|') for value in row)+' |' for row in table.extract()]
+        lines.append((table.bbox[1],table.bbox[0],table.bbox[3],'\n'.join(rows)))
+    lines.sort(key=lambda item:(round(item[0]/3),item[1]))
+    # Handle two-column headers; OCR is the fallback for complex layouts.
+    header = [line for line in lines if page.number==0 and line[0]<page.rect.height*.24]
+    if any(line[1]>page.rect.width*.5 for line in header):
+        lines = sorted(header,key=lambda item:(item[1]>page.rect.width*.5,item[0])) + [line for line in lines if line not in header]
+    text_lines = []
+    structural = re.compile(r'^(Điều\b|Chương\b|Mục\b|\d+[a-zđ]?\.\s|[a-zđ][a-zđ0-9]?\)\s|PHỤ LỤC|Phụ lục|Căn cứ|Nơi nhận|[-+•|])',re.I)
+    previous = None
+    for y,x,bottom,text in lines:
+        if (previous and text_lines and not structural.match(text) and not text.isupper()
+            and not text_lines[-1].endswith(('.',':',';','!','?','|')) and abs(x-previous[1])<35
+            and 0<=y-previous[2]<max(4,(previous[2]-previous[0])*.6)):
+            text_lines[-1] += ' '+text
+        else:
+            text_lines.append(text)
+        previous = (y,x,bottom)
+    return '\n'.join(text_lines)
+
+
+def pdf_text(path, folder, progress=lambda *args: None, *, ocr_page=None):
+    """CRAWLER: optional page callback; the default still raises NeedsOCR.
+
+    The callback returns (text, page_report, normalized_date_items). Native line
+    joining and repeated-header handling use the original document's geometry.
+    """
+    import pymupdf
+    with PDF_LOCK:
+        document = pymupdf.open(path)
+    try:
+        with PDF_LOCK:
+            if document.is_encrypted:
+                raise ValueError('Password-protected PDF is not supported')
+            if not 0 < len(document) <= int(os.getenv('REALTIME_MAX_PAGES', '1000')):
+                raise ValueError('PDF exceeds REALTIME_MAX_PAGES')
+            report = {'pages': len(document), 'ocr_pages': [], 'method': 'text_layer', 'warnings': []}
+            pages, repeated = [], Counter()
+            for page in document:
+                # Image bytes are unnecessary for native text detection (large scans in particular).
+                blocks = page.get_text('dict', flags=pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES)['blocks']
+                items = []
+                for block in blocks:
+                    for line in block.get('lines', []):
+                        text = ''.join(span['text'] for span in line['spans']).strip()
+                        if text:
+                            box = line['bbox']
+                            items.append((box, text))
+                            if box[1] < page.rect.height * .08 or box[3] > page.rect.height * .92:
+                                repeated[re.sub(r'\d', '', text)] += 1
+                pages.append(items)
+        output, details, date_pages = [], [], []
+        for i in range(len(pages)):
+            progress(i + 1, len(pages))
+            with PDF_LOCK:
+                page = document[i]
+                items = pages[i]
+                reasons = page_ocr_reasons(page, items)
+                corner = i in {0, len(pages) - 1}
+                blank = bool(reasons and not items and not page.get_image_info() and not page.get_drawings())
+                if not reasons:
+                    text = native_page_text(page, items, repeated, len(pages))
+                    detail = {'method': 'text_layer', 'issues': []}
+                    w, h = page.rect.width, page.rect.height
+                    # Match dates.pdf_items: a date may span several lines in one block.
+                    positions = [(b[0] / w, b[1] / h, (b[2] - b[0]) / w, (b[3] - b[1]) / h,
+                                  ' '.join(b[4].split())) for b in page.get_text('blocks') if b[4].strip()] if corner else []
+            if reasons:
+                if ocr_page is None:
+                    raise NeedsOCR(i + 1)
+                if blank:
+                    text, detail, positions = '', {'method': 'blank', 'issues': []}, []
+                else:
+                    # The callback guards its MuPDF operations; the HTTP wait is unlocked.
+                    text, detail, positions = ocr_page(page, i + 1, reasons, corner)
+                    report['ocr_pages'].append(i + 1)
+            output.append(text)
+            details.append({'page': i + 1, **detail})
+            if corner:
+                date_pages.append({'page': i + 1, 'items': positions, 'last': i == len(pages) - 1})
+        text = normalize('\n\n'.join(output))
+        if content_length(text) < 50 and not (ocr_page is not None and any(p.get('issues') for p in details)):
+            raise ValueError('Document has insufficient readable text')
+        if ocr_page is not None:
+            report['page_reports'] = details
+            report['date_pages'] = date_pages
+            report['review_pages'] = [p['page'] for p in details if p.get('issues')]
+            for p in details:
+                report['warnings'].extend(f"page_{p['page']}:{issue}" for issue in p.get('issues', []))
+            if report['ocr_pages']:
+                native_count = sum(p['method'] == 'text_layer' for p in details)
+                report['method'] = 'mixed' if native_count else 'ocr'
+            report['ocr_seconds'] = round(sum(p.get('ocr_seconds', 0) for p in details), 3)
+        return text, report
+
+    finally:
+        with PDF_LOCK:
+            document.close()
 
 
 

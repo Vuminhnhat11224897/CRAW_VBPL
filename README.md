@@ -140,6 +140,8 @@ Tham chiếu cấu trúc nguồn và API: [TMProxy API](https://tmproxy.com/api/
 
 Sau khi crawl, `legal_crawler.v2` đọc PDF (lớp chữ, hoặc OCR Vintern khi là bản scan), bóc metadata bằng LLM Lào Cai có dẫn chứng, chia chunk, tạo vector (BGE-M3), dò và thẩm định quan hệ giữa văn bản, rồi dựng bản nháp đúng schema v2.
 
+PDF được chọn cách đọc **theo từng trang**: giữ lớp chữ tốt, trang cần OCR dùng `/ocr/raw`; tọa độ chỉ đọc ở trang đầu/cuối nếu các trang đó cần OCR. Kết quả OCR được cache theo nội dung PDF và cấu hình. Trang nghi thiếu chữ, lặp đoạn, không khớp số hiệu/ngày nguồn, hoặc có bảng/công thức đi vào `ocr_needs_review` trước khi gọi LLM. Ảnh và hai lần đọc được lưu để đối chiếu, không tự sửa hoặc thay chữ theo lần đọc lại. Xem [cách kiểm tra và cấu hình OCR](docs/OCR.md).
+
 ```bash
 .venv-v2/bin/python -m legal_crawler.v2.export --data data --new-only   # dựng bản nháp vào data/v2_draft/<thời điểm>/, không ghi ES
 .venv-v2/bin/python -m legal_crawler.v2.publish --draft data/v2_draft/<thư mục> --data data           # chạy thử, không ghi
