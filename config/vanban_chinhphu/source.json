@@ -1,0 +1,11 @@
+{
+  "name": "Cổng văn bản Chính phủ",
+  "seeds": ["https://vanban.chinhphu.vn/he-thong-van-ban?classid=1"],
+  "page_hosts": ["vanban.chinhphu.vn"],
+  "file_hosts": ["vanban.chinhphu.vn", "datafiles.chinhphu.vn", "chinhphu.vn", "cdnchinhphu.vn"],
+  "detail_pattern": "[?&]docid=\\d+",
+  "listing_pattern": "/he-thong-van-ban(?:[/?]|$)",
+  "title_selectors": ["h1", ".doc-detail-title", "h4"],
+  "attachment_pattern": "\\.(?:pdf|docx?|rtf|zip)(?:$|[?#])",
+  "tab_pattern": "(?!)"
+}

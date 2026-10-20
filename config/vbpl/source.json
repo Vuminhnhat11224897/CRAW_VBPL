@@ -1,0 +1,20 @@
+{
+  "name": "Cơ sở dữ liệu quốc gia về văn bản pháp luật",
+  "seeds": ["https://vbpl.vn/"],
+  "adapter": "vbpl_actions",
+  "action_url": "https://vbpl.vn/",
+  "router_state": ["", {"children": [["locale", "vi", "d"], {"children": ["__PAGE__", {}, null, null]}, null, null]}, null, null, true],
+  "actions": {
+    "listing": "c529d164f28418e5898a834422629e64c6816af1",
+    "detail": "0fb12b3561faa05adec51a82efb3e4f4f427f07b",
+    "files": "ae8ddf86413544ad267f753f6b61a5f71dd260b2",
+    "download": "11972afaf856c3e135f5835fb529ce24ba23bee2"
+  },
+  "page_hosts": ["vbpl.vn"],
+  "file_hosts": ["vbpl.vn"],
+  "detail_pattern": "/Pages/vbpq-(?:toanvan|vanbangoc|thuoctinh|luocdo)\\.aspx\\?.*ItemID=\\d+",
+  "listing_pattern": "/[^/]+/Pages/(?:iHome|vbpq-timkiem)\\.aspx",
+  "title_selectors": [".vbInfo h3", ".title", "h1"],
+  "attachment_pattern": "\\.(?:pdf|docx?|rtf|zip)(?:$|[?#])|/FileData/|/Attachments/",
+  "tab_pattern": "/Pages/vbpq-(?:toanvan|vanbangoc|thuoctinh)\\.aspx"
+}

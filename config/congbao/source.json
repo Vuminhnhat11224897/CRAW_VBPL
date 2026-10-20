@@ -1,0 +1,12 @@
+{
+  "name": "Công báo Chính phủ",
+  "seeds": ["https://congbao.chinhphu.vn/van-ban-dang-cong-bao.htm"],
+  "page_hosts": ["congbao.chinhphu.vn"],
+  "file_hosts": ["congbao.chinhphu.vn", "chinhphu.vn", "cdnchinhphu.vn"],
+  "detail_pattern": "/van-ban/[^/?]+-\\d+\\.htm",
+  "listing_pattern": "/van-ban-dang-cong-bao(?:/trang-\\d+)?\\.htm",
+  "title_selectors": ["h1"],
+  "metadata_selector": ".popup__detail--thuoctinh .table",
+  "attachment_pattern": "\\.(?:pdf|docx?|rtf|zip)(?:$|[?#])|^/api/download/stream$",
+  "tab_pattern": "(?!)"
+}

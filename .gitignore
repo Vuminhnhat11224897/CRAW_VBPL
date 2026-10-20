@@ -1,0 +1,34 @@
+# Allow-list: ignore everything, then re-include only what the crawler flow needs to build, run and test.
+# New scratch folders (data_trial3/, notebooks, exports...) are therefore ignored by default.
+*
+
+# --- the flow
+!legal_crawler/
+!legal_crawler/**
+!config/
+!config/**
+!tests/
+!tests/**
+
+# --- deploy
+!Dockerfile
+!docker-compose.yml
+!.dockerignore
+!requirements.txt
+!.env.example
+
+# --- docs
+!README.md
+!docs/
+!docs/**
+
+!.gitignore
+
+# --- never, even inside the allowed folders
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+*.sqlite3*
+*.log

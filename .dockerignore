@@ -1,0 +1,7 @@
+# Build context = only what the image installs (see Dockerfile). Data, secrets and venvs never enter the image.
+*
+!requirements.txt
+!legal_crawler
+!config
+**/__pycache__
+**/*.pyc
