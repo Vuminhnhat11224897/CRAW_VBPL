@@ -32,6 +32,23 @@ def normalize(text):
     return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
 
 
+def structural_line(line):
+    """CRAWLER: interpret OCR Markdown on legal labels, preserving source text elsewhere."""
+    candidate = re.sub(r'^#{1,6}[ \t]+', '', line)
+    if candidate != line:
+        candidate = re.sub(r'[ \t]+#{1,6}$', '', candidate).rstrip()
+    for marker in ('**', '__', '*', '_'):
+        if not candidate.startswith(marker):
+            continue
+        closing = candidate.find(marker, len(marker) + 1)
+        if closing != -1:
+            candidate = candidate[len(marker):closing] + candidate[closing + len(marker):]
+            break
+    if any(pattern.match(candidate) for pattern in (ARTICLE, CLAUSE, POINT, CHAPTER, APPENDIX, TAIL, ATTACHED)):
+        return candidate
+    return line
+
+
 def appendix_header(line):
     m = APPENDIX.match(line)
     if m and re.match(r'^(?:kèm theo|ban hành kèm theo|của|tại|quy định tại)\b',m[2],re.I):return False
@@ -217,7 +234,7 @@ def parse(text):
     # Separate introductory declarations even if OCR joined them to a basis line.
     text = re.sub(r';\s*(?=Theo đề nghị\b|Chính phủ ban hành\b)', ';\n', text)
     text = re.sub(r'\bCăn\s+cứ\s+(?:các\s+)?(?:quy\s+định\s+)?(?:nêu\s+)?trên\b', lambda m:'\n'+re.sub(r'\s+',' ',m.group()), text)
-    lines = normalize(text).splitlines()
+    lines = [structural_line(line) for line in normalize(text).splitlines()]
     visible=unquoted(lines)
     labeled = [i for i, line in enumerate(lines) if visible[i] and appendix_header(line)]
     probe = lines[:labeled[0]] if labeled else lines

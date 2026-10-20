@@ -2,6 +2,16 @@
 
 Luồng đã tích hợp kiểm tra OCR/số hiệu/ngày vào `build.prepare`, trước LLM, embedding, quan hệ và publish. Đích là ba index v2 trên cụm 23 qua Tailscale `100.77.4.35:9200` (IP LAN `10.1.10.23:9200`): `legal-docs`, `legal-chunk-section-v2`, `legal-changed-v2`. Export mặc định chỉ dùng mapping/đối chiếu v2, không cần các index v3.
 
+## Kết quả chạy luồng ngày 20/10/2026
+
+Đã chạy OCR/định danh → LLM thật → chia đoạn → BGE-M3 → QA quan hệ → validation mapping sống → kiểm trùng → publisher dry-run. Hai bản nháp hợp lệ: `10100000` / 113/2026/VBHN-TT-NHNN có 12 điều, 36 chunk; `10100001` / 153/2026/TT-BTC có 13 điều, 81 chunk. Tổng 119 vector hợp lệ 1024 chiều, một quan hệ từ Điều 13 Khoản 2 tới 37/2019/TT-BTC khớp ES ID `420312`. Số/ngày cả hai khớp chính xác metadata nguồn và bằng chứng OCR. Hai ca cần duyệt vẫn quarantine, không vào draft.
+
+Test phát hiện và sửa hai lỗi tích hợp: parser không nhận tiêu đề OCR có `#`/`**`, khiến 153 chỉ có 4/13 điều; QA quan hệ thiếu định danh nguồn, nhầm “Thông tư này” với văn bản đích. Parser hiện diễn giải định dạng trên nhãn cấu trúc mà không đổi `full_content`; QA nhận số/ngày/tên văn bản nguồn và không dùng lại cache thiếu ngữ cảnh. 156 kiểm thử đạt.
+
+Publisher trả `dry_run` cho cả hai, không có ID được tạo. Đọc lại ES xác nhận hai document chưa tồn tại, không có chunk/quan hệ mang hai ID này; mapping không đổi so với đầu lượt test. `ES_WRITE_ENABLED=no`. MinIO `10.1.10.10:9000` vẫn timeout nên chưa test upload PDF hoặc ghi/đọc lại ES thật. Embedding đã sinh vector cho cả hai draft và qua preflight cuối, nhưng trước đó có timeout gián đoạn. 153 còn cảnh báo `signers_missing`, giữ `null`; chưa có bằng chứng đủ chắc để tự điền người ký.
+
+[Báo cáo và bằng chứng tại workspace](../data_es2_test/FLOW_TEST_REPORT.md). Lượt này xác nhận luồng và các bộ chặn trên bốn hồ sơ, không chứng nhận độ đúng OCR 95% trên mọi trang.
+
 ## Bộ dữ liệu đã chuẩn bị
 
 Thư mục làm việc `data_es2_test/input` có SQLite riêng và bản sao đã kiểm SHA-256 của bốn hồ sơ thật, năm PDF. Không sửa hàng đợi crawl gốc.
@@ -15,7 +25,7 @@ Thư mục làm việc `data_es2_test/input` có SQLite riêng và bản sao đ�
 
 Chỉ thử file PDF tiếp theo khi file trước được xác định là phụ lục thiếu văn bản chính. Sai số/ngày, lỗi nội dung hoặc checksum không được dùng để bỏ qua sang file khác. Các lần chọn/bỏ file lưu tại `v2_work/<sha256>/pdf-selection.json`; bằng chứng OCR ở `ocr-review.json` cùng thư mục.
 
-Hai ca qua OCR **chưa phải bản nháp đã hợp lệ để ghi**: còn cần danh mục, mapping sống, LLM, embedding và kiểm tra trùng trên ES.
+Qua OCR chỉ đủ điều kiện sang LLM; bản nháp còn phải qua danh mục, mapping sống, embedding và kiểm tra trùng trên ES. Hai ca đã chạy đủ các bước này trong lượt test nêu trên; ghi thật vẫn cần MinIO và kiểm tra lại ngay trước publish.
 
 ## 1. Kiểm tra kết nối và đầu vào, không ghi ES/MinIO
 

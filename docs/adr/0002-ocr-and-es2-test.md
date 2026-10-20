@@ -16,5 +16,5 @@
 ## Xác nhận hiện có
 
 - OCR benchmark 30 PDF, 67 trang nội dung mẫu: [kết quả](../OCR_BENCHMARK.md).
-- Chuẩn bị bốn hồ sơ thật/năm PDF trong bộ test riêng; hai ca qua OCR, hai ca giữ kiểm tra nội dung. Lần kiểm tra 09:27 UTC ngày 20/10/2026: ES qua Tailscale đã đọc được mapping ba index v2, LLM `/models` và OCR hoạt động; embedding và MinIO timeout trong preflight. [Preflight hiện tại](../../data_es2_test/preflight-tailscale.json).
-- Chưa dựng draft với mapping sống hoặc thực hiện ghi/đọc lại ES thật. [Quy trình test và điều kiện đi tiếp](../ES2_TEST.md).
+- Đã chạy bốn hồ sơ thật/năm PDF: hai bản nháp hợp lệ, 117 chunk, 119 vector và một quan hệ được QA/khớp ES; hai ca cần duyệt vẫn bị chặn. Sửa parser cho tiêu đề Markdown do OCR và bổ sung định danh nguồn cho QA quan hệ. 156 kiểm thử đạt.
+- Preflight lúc 09:35 UTC ngày 20/10/2026: ES/mapping, LLM, OCR, embedding và draft đều qua; MinIO còn timeout. Publisher dry-run hai bản nháp thành công; đọc lại xác nhận chưa tạo document/chunk/quan hệ. Chưa upload PDF hoặc thực hiện ghi/đọc lại ES thật. [Kết quả chạy luồng](../../data_es2_test/FLOW_TEST_REPORT.md) · [Quy trình test và điều kiện đi tiếp](../ES2_TEST.md).
