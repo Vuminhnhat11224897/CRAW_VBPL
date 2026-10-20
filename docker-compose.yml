@@ -1,0 +1,12 @@
+services:
+  nightly:
+    build: .
+    env_file: .env
+    # Host network so 127.0.0.1:8000 (Vintern OCR, loopback-only) is reachable when it runs on the same host or via an SSH tunnel.
+    network_mode: host
+    environment:
+      DATA_DIR: /app/data
+      NIGHTLY_AT: "00:00"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
