@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,11 +11,12 @@ PROPS = {"docs": {"document_number": {"type": "keyword"}, "issuance_date": {"typ
                   "title": {"type": "text"}, "legal_type": {"type": "keyword"}, "issuing_authority": {"type": "keyword"},
                   "full_content": {"type": "text"}, "origin": {"type": "keyword"}, "ingest_job_id": {"type": "keyword"}, "content_sha256": {"type": "keyword"},
                   "pdf_minio_path": {"type": "keyword"}, "embedding": {"type": "dense_vector", "dims": 1024}},
-         "chunks": {"doc_id": {"type": "keyword"}, "origin": {"type": "keyword"}}}
+         "chunks": {"doc_id": {"type": "keyword"}, "origin": {"type": "keyword"},
+                    "embedding": {"type": "dense_vector", "dims": 1024}}}
 DOC = {"_id": "100014", "_source": {"document_number": "1/2026/NĐ-CP", "issuance_date": "2026-10-01", "title": "t",
        "legal_type": "Nghị định", "issuing_authority": "Chính phủ", "full_content": "x", "origin": "crawler", "ingest_job_id": "crawler:20261019T000000Z",
        "content_sha256": "ab", "pdf_minio_path": "legal-crawler/pdf/ab.pdf", "embedding": [0.1] * 1024}}
-CHUNKS = [{"_id": "100014_d1", "_source": {"doc_id": "100014", "origin": "crawler"}}]
+CHUNKS = [{"_id": "100014_d1", "_source": {"doc_id": "100014", "origin": "crawler", "embedding": [0.1] * 1024}}]
 
 
 def response(status=200, body=None):
@@ -47,6 +50,19 @@ class GuardTest(unittest.TestCase):
 @patch("legal_crawler.v2.publish.ids._taken", return_value=set())
 @patch("legal_crawler.v2.publish.find", return_value=[])
 class PublishTest(unittest.TestCase):
+    def test_unembedded_draft_is_refused_before_any_es_request(self, _find, _taken):
+        chunk = {'_id': CHUNKS[0]['_id'], '_source': {k: v for k, v in CHUNKS[0]['_source'].items() if k != 'embedding'}}
+        with patch('legal_crawler.v2.publish.req') as request:
+            with self.assertRaises(ValueError):
+                publish.publish_one(DOC, [chunk], PROPS, None, None, write=True)
+        request.assert_not_called()
+
+    def test_zero_chunk_draft_is_refused_before_any_es_request(self, _find, _taken):
+        with patch('legal_crawler.v2.publish.req') as request:
+            with self.assertRaises(ValueError):
+                publish.publish_one(DOC, [], PROPS, None, None, write=True)
+        request.assert_not_called()
+
     def test_dry_run_never_writes(self, _find, _taken):
         calls = []
         with patch("legal_crawler.v2.publish.req", side_effect=lambda m, p, **k: calls.append(m) or response(404)):
@@ -140,6 +156,48 @@ class AllocatorTest(unittest.TestCase):
         from legal_crawler.v2 import ids
         with patch("legal_crawler.v2.ids._taken", return_value=set()), patch.object(ids, "START", 10100000):
             self.assertEqual(ids.next_free("http://10.1.10.23:9200", {"next_id": 5}), 10100000)
+
+
+class ReceiptTest(unittest.TestCase):
+    def test_only_confirmed_success_records_created_ids(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'documents.jsonl').write_text(json.dumps(DOC) + '\n')
+            (root / 'chunks.jsonl').write_text(json.dumps(CHUNKS[0]) + '\n')
+            change = {'_id': DOC['_id'] + '_0', '_source': {'source_id': int(DOC['_id'])}}
+            (root / 'changes.jsonl').write_text(json.dumps(change) + '\n')
+            for status in ['dry_run', 'duplicate', 'exists', 'written']:
+                args = ['publish', '--draft', str(root), '--data', str(root)] + (['--write'] if status == 'written' else [])
+                def mapping(url, **kw):
+                    key = 'docs' if '/legal-docs/' in url else 'chunks'
+                    return response(200, {'index': {'mappings': {'properties': PROPS[key]}}})
+                with patch('sys.argv', args), patch.dict(os.environ, {'ES_WRITE_ENABLED': 'yes'}), \
+                     patch.object(publish.requests, 'get', side_effect=mapping), \
+                     patch.object(publish.store, 'client'), patch.object(publish, 'publish_one', return_value=(status, 'fixture')):
+                    self.assertEqual(publish.main(), 0)
+                result = json.loads((root / 'publish-report.json').read_text())
+                self.assertTrue(result['completed'])
+                self.assertIn('started_at', result)
+                receipt = result['documents'][0]
+                self.assertEqual(receipt['created_document'], status == 'written')
+                self.assertEqual(receipt['created_chunks'], [CHUNKS[0]['_id']] if status == 'written' else [])
+                self.assertEqual(receipt['created_changes'], [change['_id']] if status == 'written' else [])
+
+    def test_unknown_only_id_cannot_reuse_a_previous_success_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'documents.jsonl').write_text(json.dumps(DOC) + '\n')
+            (root / 'chunks.jsonl').write_text(json.dumps(CHUNKS[0]) + '\n')
+            (root / 'publish-report.json').write_text(json.dumps({'documents': [{'status': 'written'}]}))
+            args = ['publish', '--draft', str(root), '--only', 'missing']
+            mapping = {'index': {'mappings': {'properties': {}}}}
+            with patch('sys.argv', args), patch.object(publish.requests, 'get', return_value=response(200, mapping)), \
+                 patch.object(publish, 'publish_one') as call:
+                self.assertEqual(publish.main(), 1)
+            call.assert_not_called()
+            receipt = json.loads((root / 'publish-report.json').read_text())
+            self.assertEqual(receipt['documents'], [])
+            self.assertEqual(receipt['error'], 'requested_ids_not_in_draft')
 
 
 if __name__ == "__main__":

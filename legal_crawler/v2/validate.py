@@ -53,7 +53,7 @@ def check_value(name, spec, value, errors):
                 errors.append(f"{name}: expected number")
         elif kind == "dense_vector":
             if (not isinstance(item, list) or len(item) != spec["dims"]
-                    or any(not isinstance(x, (int, float)) or not math.isfinite(x) for x in item)
+                    or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in item)
                     or not any(item)):
                 errors.append(f"{name}: invalid vector (dims={spec['dims']})")
         else:

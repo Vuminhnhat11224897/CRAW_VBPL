@@ -157,3 +157,5 @@ Lịch: `0 0 * * *` gọi `nightly --once`, nhật ký ở `logs/nightly.log`. S
 - PDF tải lên bucket MinIO riêng `CRAWLER_BUCKET` (mặc định `legal-crawler`).
 
 Cài đặt đầy đủ cần `PyMuPDF`, `minio`, `beautifulsoup4`: `.venv-v2/bin/pip install -r requirements.txt`.
+
+Chuẩn bị test ghi v2 trên cụm 23 bằng `python -m legal_crawler.v2.preflight --data <thư_mục_dữ_liệu> --out preflight.json`; thêm `--check-ocr` để kiểm tra các PDF và `--draft <bản_nháp>` để validation theo mapping thật/chạy thử publisher không ghi. Xem [bộ test, lệnh ghi một văn bản và receipt/hoàn tác](docs/ES2_TEST.md). Export mặc định chỉ kiểm tra bộ index v2; không cần các index v3.

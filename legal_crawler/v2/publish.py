@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -16,12 +17,23 @@ import requests
 from . import ids, safety, store
 from .compare import find
 from .validate import validate_batch
+from ..storage import atomic_json
 
 log = logging.getLogger("publish")
 ES = os.getenv("TARGET_ES_URL", "http://10.1.10.23:9200").rstrip("/")
 DOCS = os.getenv("TARGET_DOCUMENT_INDEX", "legal-docs")
 CHUNKS = os.getenv("TARGET_CHUNK_INDEX", "legal-chunk-section-v2")
 CHANGES = os.getenv("TARGET_CHANGE_INDEX", "legal-changed-v2")
+
+
+def configure():
+    """CLI loads .env after imports; apply the actual settings before checking targets."""
+    global ES, DOCS, CHUNKS, CHANGES
+    ES = os.getenv('TARGET_ES_URL', 'http://10.1.10.23:9200').rstrip('/')
+    DOCS = os.getenv('TARGET_DOCUMENT_INDEX', 'legal-docs')
+    CHUNKS = os.getenv('TARGET_CHUNK_INDEX', 'legal-chunk-section-v2')
+    CHANGES = os.getenv('TARGET_CHANGE_INDEX', 'legal-changed-v2')
+    safety.check_write(ES, DOCS, CHUNKS, CHANGES)
 
 
 def req(method, path, **kw):
@@ -60,6 +72,10 @@ def publish_one(doc, chunks, props, minio, pdf_path, write, changes=()):
     if not own(doc_id, source):
         raise safety.WriteForbidden(f"{doc_id}: not a crawler document")
     errors = validate_batch(source, chunks, props["docs"], props["chunks"], doc_id)
+    if not chunks:
+        errors.append('document has no chunks')
+    if not source.get('embedding') or any(not c['_source'].get('embedding') for c in chunks):
+        errors.append('document and every chunk require embeddings before publish')
     if errors:
         raise ValueError(f"{doc_id}: schema errors: {errors[:3]}")
     if req("GET", f"/{DOCS}/_doc/{doc_id}", params={"_source": "false"}).status_code == 200:
@@ -110,18 +126,27 @@ def publish_one(doc, chunks, props, minio, pdf_path, write, changes=()):
 def main():
     from ..settings import load_env
     load_env(Path(".env"))
+    configure()
     parser = argparse.ArgumentParser()
     parser.add_argument("--draft", type=Path, required=True, help="a data/v2_draft/<run> folder")
     parser.add_argument("--data", type=Path, default=Path("data"))
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--only", action="append", default=[], help="write only these document IDs")
+    parser.add_argument('--report', type=Path, help='receipt with statuses and exact IDs; defaults inside the draft')
     args = parser.parse_args()
+    if args.limit < 0:
+        parser.error('--limit must be nonnegative')
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     safety.check_write(ES, DOCS, CHUNKS)
     write = args.write and safety.writes_enabled()
     if args.write and not write:
         log.error("--write given but ES_WRITE_ENABLED is not 'yes': staying in dry-run")
+    receipt_path = args.report or args.draft / 'publish-report.json'
+    receipt_report = {'started_at': datetime.now(timezone.utc).isoformat(), 'completed': False,
+                      'write': write, 'host': safety.host(ES), 'indexes': [DOCS, CHUNKS, CHANGES],
+                      'summary': {}, 'documents': []}
+    atomic_json(receipt_path, receipt_report)
     props = {"docs": list(requests.get(f"{ES}/{DOCS}/_mapping", timeout=60).json().values())[0]["mappings"]["properties"],
              "chunks": list(requests.get(f"{ES}/{CHUNKS}/_mapping", timeout=60).json().values())[0]["mappings"]["properties"]}
     docs = [json.loads(line) for line in (args.draft / "documents.jsonl").open(encoding="utf-8")]
@@ -137,10 +162,15 @@ def main():
         by_doc.setdefault(chunk["_source"]["doc_id"], []).append(chunk)
     if args.only:
         docs = [d for d in docs if d["_id"] in set(args.only)]
+        if not docs:
+            receipt_report.update(completed=True, error='requested_ids_not_in_draft')
+            atomic_json(receipt_path, receipt_report)
+            log.error('Requested IDs do not exist in this draft')
+            return 1
     if args.limit:
         docs = docs[:args.limit]
     minio = store.client() if write else None
-    tally, failed = {}, 0
+    tally, failed, receipts = {}, 0, []
     for doc in docs:
         sha = doc["_source"]["content_sha256"]
         pdf = next(Path(args.data).glob(f"files/*/{sha}.pdf"), None)
@@ -149,8 +179,18 @@ def main():
         except Exception as exc:  # noqa: BLE001 - keep going, report
             status, detail, failed = "failed", f"{type(exc).__name__}: {exc}"[:300], failed + 1
         tally[status] = tally.get(status, 0) + 1
+        receipt = {'id': doc['_id'], 'number': doc['_source']['document_number'], 'status': status,
+                   'detail': detail, 'ingest_job_id': doc['_source'].get('ingest_job_id'),
+                   'content_sha256': sha, 'created_document': status == 'written',
+                   'created_chunks': [c['_id'] for c in by_doc.get(doc['_id'], [])] if status == 'written' else [],
+                   'created_changes': [c['_id'] for c in changes_by_doc.get(doc['_id'], [])] if status == 'written' else []}
+        receipts.append(receipt)
+        receipt_report.update(summary=tally, documents=receipts)
+        atomic_json(receipt_path, receipt_report)
         log.info("%s %s %s: %s", doc["_id"], doc["_source"]["document_number"], status, detail)
     log.info("Summary %s (write=%s)", tally, write)
+    receipt_report['completed'] = True
+    atomic_json(receipt_path, receipt_report)
     return 1 if failed else 0
 
 

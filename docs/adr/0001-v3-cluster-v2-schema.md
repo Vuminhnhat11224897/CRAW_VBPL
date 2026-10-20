@@ -1,5 +1,7 @@
 # ADR 0001 — Ghi dữ liệu theo schema v2 vào cụm v3
 
+> Luồng hiện hành được chốt tại [ADR 0002](0002-ocr-and-es2-test.md). Các mục nhắc đích v3, mốc ID cũ hoặc ngày ký chưa xác minh bên dưới là lịch sử, không dùng để chạy test hiện tại.
+
 - Trạng thái: **Đề xuất**; cập nhật 19/10/2026 theo chỉ đạo mới (mục 0)
 - Ngày: 2026-10-15
 - Phạm vi: luồng crawl chạy tự động 00:00 hằng đêm, bước chuẩn hóa và ghi vào Elasticsearch.

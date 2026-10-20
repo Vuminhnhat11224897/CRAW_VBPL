@@ -74,6 +74,69 @@ def read_text(path, folder=None, *, record=None):
     return text, report, pages
 
 
+def read_record(record, root, work):
+    """Select a primary PDF; an attachment listed first must not hide the actual act."""
+    import json
+    from ..storage import atomic_json, digest_file
+    files = [f for f in record.get('files', []) if f.get('format') == 'pdf']
+    if not files:
+        raise Quarantine('no_pdf')
+    attempts = []
+    for index, item in enumerate(files):
+        path, digest = Path(root) / item['path'], item['sha256']
+        folder = Path(work) / digest
+        folder.mkdir(parents=True, exist_ok=True)
+        if digest_file(path) != digest:
+            raise Quarantine('pdf_checksum_mismatch', str(path))
+        if index + 1 < len(files):
+            # A native appendix heading is enough to skip it without OCR-ing 40 pages of forms.
+            import pymupdf
+            from .text import PDF_LOCK
+            from .ocr_identity import header_fields
+            try:
+                with PDF_LOCK, pymupdf.open(path) as pdf:
+                    header = pdf[0].get_text('text', sort=True)[:1000]
+                attachment = (not header_fields(header)['number'] and
+                              not re.search(r'(?im)^\s*Số\s*:', header) and
+                              re.search(r'(?im)^\s*(?:Phụ\s+lục\b|QCVN\s*[:\d])', header))
+            except (RuntimeError, ValueError):
+                attachment = False
+            if attachment:
+                (folder / 'attachment-header.txt').write_text(header, encoding='utf-8')
+                atomic_json(folder / 'ocr-review.json', {'content_sha256': digest, 'header_only': True,
+                            'quality_status': 'needs_review', 'identity': {'status': 'needs_review',
+                            'issues': ['primary_act_missing']}})
+                attempts.append({'sha256': digest, 'reason': 'primary_act_missing',
+                                 'evidence': str(folder / 'ocr-review.json')})
+                atomic_json(folder / 'pdf-selection.json', {'candidate_count': len(files),
+                            'status': 'attachment_skipped', 'attempts': attempts})
+                continue
+        try:
+            text, report, pages = read_text(path, folder, record=record)
+        except Quarantine as exc:
+            attempts.append({'sha256': digest, 'reason': exc.reason,
+                             'evidence': str(folder / 'ocr-review.json')})
+            atomic_json(folder / 'pdf-selection.json', {'candidate_count': len(files),
+                        'candidate_sha256': digest, 'status': 'quarantined', 'attempts': attempts})
+            # Only a positively identified attachment allows trying the next PDF.
+            # Wrong numbers/dates or body-quality failures are never bypassed this way.
+            try:
+                saved = json.loads((folder / 'ocr-review.json').read_text())
+            except (OSError, ValueError):
+                saved = {}
+            attachment = 'primary_act_missing' in saved.get('identity', {}).get('issues', [])
+            if exc.reason == 'ocr_identity_unverified' and attachment and index + 1 < len(files):
+                continue
+            raise
+        if report.get('content_sha256') != digest:
+            raise Quarantine('pdf_checksum_mismatch', str(path))
+        report['pdf_selection'] = {'status': 'selected', 'selected_sha256': digest, 'selected_file': str(path),
+                                   'candidate_count': len(files), 'skipped': attempts}
+        atomic_json(folder / 'pdf-selection.json', report['pdf_selection'])
+        return path, digest, folder, text, report, pages
+    raise Quarantine('no_pdf')
+
+
 def resolve_dates(record, meta, pages, warnings, identity=None):
     """Web dates win; the PDF corner rules are the fallback for the effective date and a cross-check for the rest."""
     found = datelib.locate(pages)
@@ -107,10 +170,7 @@ def resolve_dates(record, meta, pages, warnings, identity=None):
 
 def prepare(record, root, catalog, work):
     """Read text, extract metadata with the LLM, parse structure. No ID needed yet; safe to run in parallel."""
-    path, digest = pick_pdf(record, root)
-    folder = work / digest
-    folder.mkdir(parents=True, exist_ok=True)
-    text, report, pages = read_text(path, folder, record=record)
+    path, digest, folder, text, report, pages = read_record(record, root, work)
     try:
         meta, evidence, warnings = extract_metadata(text, catalog, folder)
     except Exception as exc:  # LLM down, schema/evidence rejected three times, ...

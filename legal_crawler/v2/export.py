@@ -27,6 +27,18 @@ EMBEDDING_URL = os.getenv("EMBEDDING_URL", "http://100.119.143.66:8989")
 PERMANENT = {"metadata_conflict", "metadata_invalid", "authority_not_in_catalog", "no_pdf", "outside_date_range", "unreadable", "no_chunks"}
 
 
+def configure():
+    global SOURCE_ES, TARGET_ES, EMBEDDING_URL
+    SOURCE_ES = os.getenv('SOURCE_ES_URL', 'http://10.1.10.23:9200').rstrip('/')
+    TARGET_ES = os.getenv('TARGET_ES_URL', 'http://10.1.10.23:9200').rstrip('/')
+    EMBEDDING_URL = os.getenv('EMBEDDING_URL', 'http://100.119.143.66:8989').rstrip('/')
+    safety.forbid_cluster_10(SOURCE_ES)
+    safety.check_write(TARGET_ES, 'legal-docs', 'legal-chunk-section-v2', 'legal-changed-v2')
+    ids.START = int(os.getenv('CRAWLER_ID_START', '10100000'))
+    if not 0 < ids.START < ids.LIMIT:
+        raise ValueError('CRAWLER_ID_START is outside the v2 integer range')
+
+
 def es_json(url, body=None):
     safety.forbid_cluster_10(url)
     response = requests.post(url, json=body, timeout=60) if body is not None else requests.get(url, timeout=60)
@@ -61,6 +73,7 @@ def embed(texts):
 def main():
     from ..settings import load_env
     load_env(Path(".env"))
+    configure()
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("data_trial"))
     parser.add_argument("--out", type=Path)
@@ -80,8 +93,8 @@ def main():
     if args.limit:
         records = records[:args.limit]
     cat = catalog()
-    doc_props = {"v2": properties(SOURCE_ES, "legal-docs"), "v3": properties(TARGET_ES, "legal-docs-v3")}
-    chunk_props = {"v2": properties(SOURCE_ES, "legal-chunk-section-v2"), "v3": properties(TARGET_ES, "legal-chunk-section-v3")}
+    doc_props = {"v2": properties(TARGET_ES, "legal-docs")}
+    chunk_props = {"v2": properties(TARGET_ES, "legal-chunk-section-v2")}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = args.out or args.data / "v2_draft" / stamp
     out.mkdir(parents=True, exist_ok=True)
@@ -120,7 +133,7 @@ def main():
         from .validate import validate_source
         change_errors = [f"change {c['_id']}.{e}" for c in changes["rows"] for e in validate_source(c["_source"], change_props)]
         errors = {}
-        for version in ("v2", "v3"):
+        for version in ("v2",):
             if args.no_embed:  # vectors are validated only when generated
                 props = {k: v for k, v in doc_props[version].items() if k != "embedding"}
                 cprops = {k: v for k, v in chunk_props[version].items() if k != "embedding"}

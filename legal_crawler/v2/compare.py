@@ -58,7 +58,7 @@ def diff_against(document, chunks, doc_id, hit, base, chunk_index):
             "chunk_fields_differ": differing}}
 
 
-def compare_all(items, source_es, target_es):
+def compare_all(items, source_es, target_es, *, include_v3=False):
     """items: [(record, doc_id, result)] -> per-document report."""
     report = []
     for record, doc_id, result in items:
@@ -67,8 +67,10 @@ def compare_all(items, source_es, target_es):
         row = {"number": number, "issued": issued, "draft_id": str(doc_id), "source": record["source"],
                "warnings": result["warnings"], "dates": result["dates"],
                "in_v2": [], "in_v3": []}
-        for key, base, index, cindex in (("in_v2", source_es, "legal-docs", "legal-chunk-section-v2"),
-                                          ("in_v3", target_es, "legal-docs-v3", "legal-chunk-section-v3")):
+        targets = [("in_v2", source_es, "legal-docs", "legal-chunk-section-v2")]
+        if include_v3:
+            targets.append(("in_v3", target_es, "legal-docs-v3", "legal-chunk-section-v3"))
+        for key, base, index, cindex in targets:
             for hit in find(base, index, number, issued):
                 row[key].append(diff_against(document, result["chunks"], doc_id, hit, base, cindex))
         row["would_skip"] = bool(row["in_v2"] or row["in_v3"])
