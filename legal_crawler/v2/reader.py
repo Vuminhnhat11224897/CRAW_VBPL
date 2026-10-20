@@ -1,7 +1,7 @@
 """CRAWLER: page-level native/OCR routing, resumable evidence and review signals.
 
-Only Vintern is used. Whole-page text is authoritative within this stage; a
-second read is evidence for review and never silently replaces a first read.
+Only Vintern is used. Raw whole-page text is retained. Body verification never
+replaces it; header repairs require exact source agreement and retain evidence.
 """
 import hashlib
 import json
@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import ocr
-from .ocr_quality import comparison_text, page_issues
+from .ocr_quality import CONTENT_TARGET, comparison_text, page_issues
 from .text import PDF_LOCK, pdf_text, read_document, validate_file
 
 CACHE_SCHEMA = 1
@@ -126,7 +126,10 @@ class PageOCR:
                     with PDF_LOCK:
                         page.get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), alpha=False).save(image)
                 detail['image_file'] = str(image)
-                if self.retry_review == 'yes':
+                # A complete source record uses the stricter field-specific quarter reader below.
+                identity_only = (self.record and self.record.get('number') and self.record.get('issued_date')
+                                 and all(i.startswith('source_') for i in issues))
+                if self.retry_review == 'yes' and not identity_only:
                     self._review(page, original_file, stem, text, detail)
             positions = self._boxes(original_file, stem) if want_dates else []
             _write_json(self.cache / (stem + '.report.json'), {'page': number, **detail})
@@ -195,6 +198,23 @@ def read(path, folder, *, record=None, progress=lambda *args: None):
     cache.mkdir(parents=True, exist_ok=True)
     text, report = pdf_text(path, folder, progress, ocr_page=PageOCR(cache, record))
     positions = report.pop('date_pages')
+    if record:
+        from .ocr_identity import repair_header, verify
+        identity = verify(path, folder, digest, record, report['page_reports'])
+        report['identity'] = identity
+        if identity['status'] == 'source_agreement':
+            text, repairs = repair_header(text, identity)
+            report['header_repairs'] = repairs
+            first = report['page_reports'][0]
+            first['issues'] = [i for i in first.get('issues', []) if not i.startswith('source_')]
+        report['review_pages'] = [p['page'] for p in report['page_reports'] if p.get('issues')]
+        if identity['issues'] and 1 not in report['review_pages']:
+            report['review_pages'].insert(0, 1)
+        report['warnings'] = [f"page_{p['page']}:{i}" for p in report['page_reports'] for i in p.get('issues', [])]
+        report['warnings'].extend(identity['issues'])
+        report['region_ocr_seconds'] = round(sum(r.get('seconds', 0) for r in identity['reads']), 3)
+    report['content_accuracy_target'] = CONTENT_TARGET
+    report['content_accuracy_certified'] = False
     report['content_sha256'] = digest
     report['quality_status'] = 'needs_review' if report['review_pages'] else 'no_issues_detected'
     report['evidence_dir'] = str(cache)

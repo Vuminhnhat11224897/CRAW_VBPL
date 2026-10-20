@@ -7,6 +7,8 @@ from .contracts import number_key
 from .dates import dates_in
 from .text import content_length
 
+CONTENT_TARGET = .95
+
 
 def comparison_text(text):
     text = unicodedata.normalize('NFKC', text)
@@ -38,8 +40,11 @@ def page_issues(text, native='', *, record=None, first=False):
         reference = Counter(re.findall(r'\w+', comparison_text(native)))
         actual = Counter(re.findall(r'\w+', comparison_text(text)))
         missing = sum((reference - actual).values())
-        if missing / max(1, sum(reference.values())) > .15:
+        if missing / max(1, sum(reference.values())) > 1 - CONTENT_TARGET + 1e-12:
             issues.append('native_text_missing')
+        added = sum((actual - reference).values())
+        if added / max(1, sum(reference.values())) > 1 - CONTENT_TARGET + 1e-12:
+            issues.append('native_text_added')
         if Counter(re.findall(r'\d+', native)) - Counter(re.findall(r'\d+', text)):
             issues.append('native_numbers_missing')
     if first and record:

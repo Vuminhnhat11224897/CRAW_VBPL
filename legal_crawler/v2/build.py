@@ -65,15 +65,29 @@ def read_text(path, folder=None, *, record=None):
         raise Quarantine("ocr_failed", str(exc)) from None
     except ValueError as exc:
         raise Quarantine("unreadable", str(exc)) from None
+    if report.get('identity', {}).get('issues'):
+        raise Quarantine('ocr_identity_unverified',
+                         f"{report['identity']['issues']}; evidence: {folder / 'ocr-review.json'}")
     if report.get('review_pages'):
         raise Quarantine('ocr_needs_review',
                          f"pages {report['review_pages']}; evidence: {folder / 'ocr-review.json'}")
     return text, report, pages
 
 
-def resolve_dates(record, meta, pages, warnings):
+def resolve_dates(record, meta, pages, warnings, identity=None):
     """Web dates win; the PDF corner rules are the fallback for the effective date and a cross-check for the rest."""
     found = datelib.locate(pages)
+    if identity is not None:
+        own_issue = identity.get('issued_date', {})
+        if own_issue.get('status') == 'source_agreement':
+            found['issue'] = {'date': own_issue['value'], 'page': 1,
+                              'line': own_issue['evidence']['quote'], 'source': 'verified_identity'}
+        found['sign'] = identity.get('signing_date')
+        derived = (found.get('effective') or {}).get('derived_from')
+        if derived:
+            verified = found.get(derived)
+            found['effective'] = ({**found['effective'], 'date': verified['date'],
+                                   'date_source': 'verified_identity'} if verified else None)
     issue = found["issue"]["date"] if found["issue"] else None
     if issue and issue != meta["issuance_date"]:
         warnings.append(f"issue_date_corner_mismatch: pdf corner {issue} vs extracted {meta['issuance_date']}")
@@ -112,7 +126,7 @@ def prepare(record, root, catalog, work):
         # Measured against reviewed v2 documents the model over-selects sectors (see ADR 0001), so default to [].
         meta["legal_sectors"] = []
         warnings = [w for w in warnings if not w.startswith("legal_sectors:")]
-    dates = resolve_dates(record, meta, pages, warnings)
+    dates = resolve_dates(record, meta, pages, warnings, report.get('identity'))
     meta["url"] = record["source_url"]
     parsed, stats = parse(text)
     if stats["grade"] != "full":
