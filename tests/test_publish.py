@@ -34,10 +34,12 @@ class GuardTest(unittest.TestCase):
                 safety.check_write(url, "legal-docs")
 
     def test_only_cluster_23_and_v2_indexes_may_be_written(self):
-        safety.check_write("http://10.1.10.23:9200", "legal-docs", "legal-chunk-section-v2", "legal-changed-v2")
-        for index in ("legal-docs-v3", "legal-chunk-section-v3", "legal-changed-v3", "legal-docs-v4", "legal-changed"):
-            with self.assertRaises(safety.WriteForbidden):
-                safety.check_write("http://10.1.10.23:9200", index)
+        for url in ("http://10.1.10.23:9200", "http://100.77.4.35:9200"):
+            with self.subTest(url=url):
+                safety.check_write(url, "legal-docs", "legal-chunk-section-v2", "legal-changed-v2")
+                for index in ("legal-docs-v3", "legal-chunk-section-v3", "legal-changed-v3", "legal-docs-v4", "legal-changed"):
+                    with self.assertRaises(safety.WriteForbidden):
+                        safety.check_write(url, index)
         with self.assertRaises(safety.WriteForbidden):
             safety.check_write("http://10.9.9.9:9200", "legal-docs")
 

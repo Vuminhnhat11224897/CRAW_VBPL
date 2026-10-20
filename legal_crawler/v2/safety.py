@@ -1,10 +1,11 @@
-"""Hard write guards. Writes are allowed only to one cluster and only to the two v2 index names below."""
+"""Hard write guards for cluster 23's LAN/Tailscale endpoints and the three v2 indexes."""
 import os
 from urllib.parse import urlsplit
 
 # Absolutely never written by this project (standing instruction, 2026-10-19).
 FORBIDDEN_HOSTS = {"10.1.10.10"}
-ALLOWED_WRITE_HOSTS = {"10.1.10.23"}
+# Cluster 23's Tailscale endpoint was explicitly supplied by the user.
+ALLOWED_WRITE_HOSTS = {"10.1.10.23", "100.77.4.35"}
 ALLOWED_INDEXES = {"legal-docs", "legal-chunk-section-v2", "legal-changed-v2"}
 
 

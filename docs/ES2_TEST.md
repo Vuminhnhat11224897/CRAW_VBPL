@@ -1,6 +1,6 @@
 # Chuẩn bị test ghi v2 vào cụm 23
 
-Luồng đã tích hợp kiểm tra OCR/số hiệu/ngày vào `build.prepare`, trước LLM, embedding, quan hệ và publish. Đích là ba index v2 trên `10.1.10.23:9200`: `legal-docs`, `legal-chunk-section-v2`, `legal-changed-v2`. Export mặc định chỉ dùng mapping/đối chiếu v2, không cần các index v3.
+Luồng đã tích hợp kiểm tra OCR/số hiệu/ngày vào `build.prepare`, trước LLM, embedding, quan hệ và publish. Đích là ba index v2 trên cụm 23 qua Tailscale `100.77.4.35:9200` (IP LAN `10.1.10.23:9200`): `legal-docs`, `legal-chunk-section-v2`, `legal-changed-v2`. Export mặc định chỉ dùng mapping/đối chiếu v2, không cần các index v3.
 
 ## Bộ dữ liệu đã chuẩn bị
 
@@ -34,6 +34,8 @@ Lệnh không tạo index, bucket hoặc bản ghi; không có tham số ghi. Ex
 `ready_for_export` kiểm tra điều kiện dựng nháp; MinIO riêng lẻ bị lỗi không ngăn dựng nháp khi ES/LLM/OCR/embedding đã thông. `ready_for_write_test` còn cần MinIO, draft hợp lệ và có văn bản mới sau kiểm tra trùng.
 
 Lượt chuẩn bị 20/10/2026: OCR, LLM `/models` và sinh thử embedding hoạt động; ES `10.1.10.23:9200` và endpoint MinIO trong `.env` bị `ConnectTimeout` từ máy chạy. Vì vậy chưa đọc mapping/danh mục sống, chưa dựng full draft, chưa test ghi thật. Cần thông kết nối của máy chạy tới hai dịch vụ này trước bước 2; giữ nguyên đích ES 23.
+
+Cập nhật 20/10/2026 lúc 09:27 UTC: người dùng cung cấp endpoint Tailscale `100.77.4.35:9200` cho nguồn và đích. Ping 3/3 gói, trung bình 10,79 ms; ES trả HTTP 200, phiên bản 8.13.4, health `yellow`; đọc được mapping của cả ba index v2. `.env` giữ `ES_WRITE_ENABLED=no`, MinIO vẫn là `10.1.10.10:9000`. [Preflight mới](../data_es2_test/preflight-tailscale.json) còn chặn bởi MinIO và embedding bị `ConnectTimeout`; embedding có phản hồi health khi kiểm riêng nhưng chưa qua preflight. OCR/LLM hoạt động, bộ mẫu vẫn hai ca đủ điều kiện và hai ca quarantine. Chưa ghi ES/MinIO hoặc dựng full draft.
 
 ## 2. Dựng bản nháp thật khi preflight đã thông
 
