@@ -55,10 +55,12 @@ def appendix_header(line):
     return bool(m and (line.isupper() or not m[2] or m[2].isupper() or len(line) < 60))
 
 
-def unquoted(lines):
+def unquoted(lines, quote_resets=()):
     """Keep quoted amendment text in bodies without treating its labels as source labels."""
     depth=0;straight=False;result=[]
     for line in lines:
+        if line in quote_resets:
+            depth, straight = 0, False
         result.append(not depth and not straight)
         for i,char in enumerate(line):
             if char=='“':depth+=1
@@ -75,9 +77,9 @@ def unquoted(lines):
     return result
 
 
-def numeric_sequence(lines, pattern, restart=False, start_mid=False):
+def numeric_sequence(lines, pattern, restart=False, start_mid=False, visibility=None):
     candidates = []
-    for i, (line,visible) in enumerate(zip(lines,unquoted(lines))):
+    for i, (line,visible) in enumerate(zip(lines, unquoted(lines) if visibility is None else visibility)):
         if not visible or line.startswith('|'):
             continue
         m = pattern.match(line)
@@ -138,6 +140,25 @@ def split_points(text):
     return '\n'.join(lines[:candidates[0][0]]).strip(), points
 
 
+def point_sequence_issues(text, quote_resets=()):
+    """Reject orphan/gapped point lists instead of silently flattening them."""
+    lines = [structural_line(line) for line in normalize(text).splitlines()]
+    visible_lines = unquoted(lines, quote_resets)
+    article_positions = {i for i, _, _ in numeric_sequence(lines, ARTICLE, restart=True, start_mid=True, visibility=visible_lines)}
+    previous, location, issues = '', '', []
+    for i, (line, visible) in enumerate(zip(lines, visible_lines)):
+        if not visible:
+            continue
+        if i in article_positions or any(p.match(line) for p in (CLAUSE, CHAPTER, APPENDIX, TAIL)):
+            previous, location = '', line[:100]
+        match = POINT.match(line)
+        if match:
+            if not next_point(previous, match[1]):
+                issues.append(f'{location}: unexpected point {match[1]} after {previous or "start"}')
+            previous = match[1]
+    return issues
+
+
 def split_clauses(text):
     lines = text.splitlines()
     candidates = numeric_sequence(lines, CLAUSE)
@@ -154,9 +175,9 @@ def split_clauses(text):
     return ('\n'.join(lines[:candidates[0][0]]).strip() if candidates else ''), clauses
 
 
-def chapter_marks(lines):
+def chapter_marks(lines, visibility=None):
     marks = []
-    for i, (line,visible) in enumerate(zip(lines,unquoted(lines))):
+    for i, (line,visible) in enumerate(zip(lines, unquoted(lines) if visibility is None else visibility)):
         m = CHAPTER.match(line)
         if not visible or not m:
             continue
@@ -170,9 +191,9 @@ def chapter_marks(lines):
     return marks
 
 
-def parse_articles(lines):
-    candidates = numeric_sequence(lines, ARTICLE, restart=True, start_mid=True)
-    marks = chapter_marks(lines)
+def parse_articles(lines, visibility=None):
+    candidates = numeric_sequence(lines, ARTICLE, restart=True, start_mid=True, visibility=visibility)
+    marks = chapter_marks(lines, visibility)
     articles = []
     for pos, (i, m, segment) in enumerate(candidates):
         end = candidates[pos + 1][0] if pos + 1 < len(candidates) else len(lines)
@@ -230,15 +251,15 @@ def split_sections(text):
     return []
 
 
-def parse(text):
+def parse(text, quote_resets=()):
     # Separate introductory declarations even if OCR joined them to a basis line.
     text = re.sub(r';\s*(?=Theo đề nghị\b|Chính phủ ban hành\b)', ';\n', text)
     text = re.sub(r'\bCăn\s+cứ\s+(?:các\s+)?(?:quy\s+định\s+)?(?:nêu\s+)?trên\b', lambda m:'\n'+re.sub(r'\s+',' ',m.group()), text)
     lines = [structural_line(line) for line in normalize(text).splitlines()]
-    visible=unquoted(lines)
+    visible=unquoted(lines, quote_resets)
     labeled = [i for i, line in enumerate(lines) if visible[i] and appendix_header(line)]
     probe = lines[:labeled[0]] if labeled else lines
-    _, candidates = parse_articles(probe)
+    _, candidates = parse_articles(probe, visible[:len(probe)])
     anchor = max((i for i, _, seg in candidates if not seg), default=0)
     recipients = next((i for i in range(anchor, len(probe)) if visible[i] and re.match(r'^Nơi nhận\s*:', probe[i], re.I)), None)
     tail_start = recipients
@@ -253,7 +274,7 @@ def parse(text):
         body_end = tail_start if tail_start is not None else (appendix_start if appendix_start is not None else len(lines))
         tail = '\n'.join(lines[body_end:appendix_start]).strip() if tail_start is not None else ''
     main = lines[:body_end]
-    articles, candidates = parse_articles(main)
+    articles, candidates = parse_articles(main, visible[:body_end])
     first_article = candidates[0][0] if candidates else len(main)
     basis, basis_end = [], 0
     i = 0
@@ -266,7 +287,7 @@ def parse(text):
             basis_end = i
         else:
             i += 1
-    marks = [i for i, _, _ in chapter_marks(main) if basis_end <= i < first_article]
+    marks = [i for i, _, _ in chapter_marks(main, visible[:body_end]) if basis_end <= i < first_article]
     intro_end = marks[-1] if marks else first_article
     intro = '\n'.join(main[basis_end:intro_end]).strip()
     appendices = []

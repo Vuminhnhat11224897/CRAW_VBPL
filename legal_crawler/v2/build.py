@@ -9,11 +9,11 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .contracts import authority_key, normalize_metadata
+from .contracts import normalize_metadata, same_authority, signer_parts
 from . import dates as datelib
 from . import ocr
 from . import reader
-from .extract import extract_metadata
+from .extract import extract_metadata, signature_for_metadata
 from .structure import build_chunks, parse
 
 ORIGIN = "crawler"
@@ -45,7 +45,7 @@ def cross_check(meta, record):
         problems.append(f"issued_date web={record.get('issued_date')!r} pdf={meta.get('issuance_date')!r}")
     if record.get("document_type") and record["document_type"].casefold() != (meta.get("legal_type") or "").casefold():
         problems.append(f"legal_type web={record['document_type']!r} pdf={meta.get('legal_type')!r}")
-    if record.get("issuer") and authority_key(record["issuer"]) != authority_key(meta.get("issuing_authority")):
+    if record.get("issuer") and not same_authority(record["issuer"], meta.get("issuing_authority")):
         problems.append(f"issuer web={record['issuer']!r} pdf={meta.get('issuing_authority')!r}")
     if problems:
         raise Quarantine("metadata_conflict", "; ".join(problems))
@@ -171,8 +171,33 @@ def resolve_dates(record, meta, pages, warnings, identity=None):
 def prepare(record, root, catalog, work):
     """Read text, extract metadata with the LLM, parse structure. No ID needed yet; safe to run in parallel."""
     path, digest, folder, text, report, pages = read_record(record, root, work)
+    from .reviewed_text import apply_review, text_hash
+    from .structure import point_sequence_issues
     try:
-        meta, evidence, warnings = extract_metadata(text, catalog, folder)
+        text, review = apply_review(text, digest, folder)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise Quarantine('ocr_review_invalid', str(exc)) from None
+    if review:
+        report['reviewed_corrections'] = review
+    from .reviewed_metadata import load_review
+    try:
+        metadata_review = load_review(folder, digest, text)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise Quarantine('metadata_review_invalid', str(exc)) from None
+    quote_resets = metadata_review.get('quote_resets', [])
+    issues = point_sequence_issues(text, quote_resets)
+    accepted_points = metadata_review.get('accepted_point_issues', [])
+    if any(item not in issues for item in accepted_points):
+        raise Quarantine('metadata_review_invalid', 'Reviewed point issue no longer matches')
+    issues = [item for item in issues if item not in accepted_points]
+    if issues:
+        raise Quarantine('ocr_structure_needs_review', '; '.join(issues))
+    # Metadata and sector caches must not survive a correction to source text.
+    metadata_folder = folder / ('metadata-' + text_hash(text)[:24])
+    metadata_folder.mkdir(parents=True, exist_ok=True)
+    try:
+        meta, evidence, warnings = extract_metadata(text, catalog, metadata_folder,
+            signature=metadata_review.get('signature') or signature_for_metadata(report.get('identity',{}),pages))
     except Exception as exc:  # LLM down, schema/evidence rejected three times, ...
         raise Quarantine("llm_extraction_failed", f"{type(exc).__name__}: {str(exc)[:300]}") from None
     try:  # strict re-validation: extract_metadata only warns, the nightly writer must not
@@ -180,7 +205,10 @@ def prepare(record, root, catalog, work):
     except ValueError as exc:
         raise Quarantine("metadata_invalid", str(exc)) from None
     if meta["issuing_authority"] not in catalog["issuing_authority"]:
-        raise Quarantine("authority_not_in_catalog", meta["issuing_authority"])
+        reviewed_authority = metadata_review.get('new_authority')
+        if reviewed_authority != meta['issuing_authority'] or not same_authority(record.get('issuer'), reviewed_authority):
+            raise Quarantine("authority_not_in_catalog", meta["issuing_authority"])
+        warnings.append('new_authority_visually_reviewed: ' + reviewed_authority)
     cross_check(meta, record)
     if os.getenv("LEGAL_SECTORS_MODE", "empty") != "llm":
         # Measured against reviewed v2 documents the model over-selects sectors (see ADR 0001), so default to [].
@@ -188,7 +216,13 @@ def prepare(record, root, catalog, work):
         warnings = [w for w in warnings if not w.startswith("legal_sectors:")]
     dates = resolve_dates(record, meta, pages, warnings, report.get('identity'))
     meta["url"] = record["source_url"]
-    parsed, stats = parse(text)
+    parsed, stats = parse(text, quote_resets)
+    if metadata_review:
+        report['metadata_review'] = {'file': metadata_review['file'], 'reviewer': metadata_review['reviewer'],
+                                    'quote_resets': len(quote_resets)}
+    # Interleaved PDF columns can place standalone signature lines among recipients.
+    signature_lines = {part.casefold() for part in signer_parts(meta.get('signers'))}
+    parsed['noi_nhan'] = [value for value in parsed['noi_nhan'] if value.casefold() not in signature_lines]
     if stats["grade"] != "full":
         warnings.append("grade_" + stats["grade"])
     if not meta.get("signers"):

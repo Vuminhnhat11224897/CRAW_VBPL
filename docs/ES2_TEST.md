@@ -2,6 +2,32 @@
 
 Luồng đã tích hợp kiểm tra OCR/số hiệu/ngày vào `build.prepare`, trước LLM, embedding, quan hệ và publish. Đích là ba index v2 trên cụm 23 qua Tailscale `100.77.4.35:9200` (IP LAN `10.1.10.23:9200`): `legal-docs`, `legal-chunk-section-v2`, `legal-changed-v2`. Export mặc định chỉ dùng mapping/đối chiếu v2, không cần các index v3.
 
+## Kết quả mới nhất: 10 văn bản ngày 21/10/2026
+
+Đã tải mới 10 hồ sơ ban hành ngày 20–21/10/2026, tổng 129 trang PDF, sau kiểm tra trùng ES. Lượt đầu chỉ một hồ sơ đủ điều kiện ghi; sau đối chiếu PDF và hiệu đính có bằng chứng, đã tạo thêm 9 document và cập nhật bản `10100001` / `27/2026/TT-BNV` bằng điều kiện phiên bản, có bản sao lưu trước sửa.
+
+Đọc lại đủ 10 document, **1.018 chunk, 153 quan hệ và 1.028 vector**: mọi field khớp bản đã duyệt, vector đúng 1024 chiều và khớp trong dung sai số thực; PDF tải lại từ MinIO đều đúng SHA-256. Publish lần nữa trả `exists=10`, không tạo thêm dữ liệu. Mapping và `.env` không đổi. **173 kiểm thử đạt**.
+
+Đã đối chiếu số hiệu, ngày ban hành, cơ quan và khối chữ ký của cả 10 PDF; duyệt 7 trang OCR bị cảnh báo. Nghị định `392/2026/NĐ-CP` được phục hồi đủ 51 điều và 2 phụ lục khi OCR làm sai trạng thái ngoặc kép; nghị định `391/2026/NĐ-CP` đủ 65 điều. Phụ lục Thông tư 27 được dựng lại từ ô bảng PDF, đủ 31 dòng; tên/chức vụ người ký không còn bị đưa vào nơi nhận. Đây là kiểm tra các trường và cấu trúc đã nêu, không chứng nhận từng từ trên toàn bộ 129 trang.
+
+Ngoài `reviewed-corrections.json`, luồng hỗ trợ `reviewed-pages.json` và `reviewed-metadata.json` trong thư mục làm việc theo SHA-256 của PDF. Bản duyệt phải khớp hash PDF, văn bản đầu vào và ảnh bằng chứng; các biên điều/phụ lục được duyệt phải khớp chính xác tiêu đề trong văn bản. Duyệt trang chỉ giải quyết các cảnh báo đã được chỉ rõ, không tự bỏ qua lỗi mới. Tên cơ quan mới chỉ được chấp nhận khi có duyệt PDF và khớp cơ quan trên trang nguồn.
+
+Chi tiết và receipt tại thư mục dữ liệu cục bộ `data_latest10/20261021T075336Z/review/`, báo cáo `final-report.json`; dữ liệu thử và ảnh không đưa vào Git. Kết quả này có bước duyệt riêng, chưa xác nhận vận hành tự động không giám sát: cơ chế làm mới danh sách, thứ tự mới nhất trước và thử lại publish vẫn cần hoàn thiện trước khi bật nightly.
+
+## Lượt ghi một văn bản trước đó ngày 21/10/2026
+
+**Bản thử trước đã hiệu đính và cập nhật ES:** bản `10100000` revision 2 có 86 chunk, 87 vector và đủ người ký Nguyễn Đức Chi. Rà ảnh PDF phát hiện lỗi OCR đổi nghĩa, mất điểm a Điều 3 và lẫn số trang; đã hiệu đính 16 mục theo bằng chứng, dựng lại metadata/chunk/embedding rồi đọc lại ES xác nhận. 166 kiểm thử đạt. Có snapshot trước sửa và nhật ký ghi có kiểm tra phiên bản. [Báo cáo hiệu đính](../data_es2_e2e/20261021T023611Z/accuracy-fix/REPORT.md). Các số liệu 81 chunk và signers=null bên dưới là lịch sử lần ghi đầu.
+
+Pipeline chặn chuỗi điểm thiếu nhãn bằng `ocr_structure_needs_review`, bỏ số trang OCR khớp ở đầu trang, và tách cache metadata theo hash toàn văn. Hiệu đính có duyệt được đặt tại `<work>/<pdf_sha256>/reviewed-corrections.json`: phải khớp hash PDF, hash văn bản đầu vào/đầu ra, từng anchor và số lần xuất hiện; mỗi sửa có trang, lý do và người duyệt. Không tự động thay từ OCR trên toàn kho. Publisher thường vẫn chỉ tạo mới; sửa bản thử lần này dùng script riêng, giới hạn đúng các ID của lượt thử được người dùng yêu cầu sửa.
+
+**Đã xác nhận full luồng cho một văn bản thật:** crawl mới `153/2026/TT-BTC` từ nguồn Chính phủ qua TMProxy → OCR 8 trang → LLM → 13 điều, 81 chunk → 82 vector BGE-M3 → QA một quan hệ → upload PDF MinIO → ghi/đọc lại ES2 cụm 23. Document ID **`10100000`**, 81 chunk và một quan hệ tới `37/2019/TT-BTC` / ES ID `420312`; receipt trả `written=1`.
+
+Xác minh độc lập đọc lại toàn bộ document/chunk/quan hệ và vector, tải PDF từ MinIO đối chiếu SHA-256: đạt. Publish lần hai trả `exists=1`, không tạo thêm dữ liệu. Mapping và `.env` giữ nguyên, `ES_WRITE_ENABLED=no`; chỉ bật ghi cho tiến trình test. `signers` vẫn `null` với cảnh báo `signers_missing`. Lượt này dùng nguồn Chính phủ, chưa kiểm tra tải thật từ adapter `vbpl.vn`. Các lượt sau cần dựng nháp mới và kiểm tra trùng lại.
+
+[Báo cáo, receipt ghi thật và bằng chứng đọc lại](../data_es2_e2e/20261021T023611Z/REPORT.md).
+
+Cập nhật 21/10/2026: đã tìm và sửa lỗi bằng chứng OCR vùng chữ ký không được truyền sang metadata. Chạy lại LLM thật đọc đúng `KT. BỘ TRƯỞNG, THỨ TRƯỞNG, Nguyễn Đức Chi`; 81 chunk cục bộ nhận đủ người ký, toàn văn giữ nguyên, 162 kiểm thử đạt. Bản ghi ES của lượt thử trước chưa cập nhật. [Báo cáo sửa người ký](../data_es2_e2e/20261021T023611Z/signature-fix/REPORT.md).
+
 ## Kết quả chạy luồng ngày 20/10/2026
 
 Đã chạy OCR/định danh → LLM thật → chia đoạn → BGE-M3 → QA quan hệ → validation mapping sống → kiểm trùng → publisher dry-run. Hai bản nháp hợp lệ: `10100000` / 113/2026/VBHN-TT-NHNN có 12 điều, 36 chunk; `10100001` / 153/2026/TT-BTC có 13 điều, 81 chunk. Tổng 119 vector hợp lệ 1024 chiều, một quan hệ từ Điều 13 Khoản 2 tới 37/2019/TT-BTC khớp ES ID `420312`. Số/ngày cả hai khớp chính xác metadata nguồn và bằng chứng OCR. Hai ca cần duyệt vẫn quarantine, không vào draft.

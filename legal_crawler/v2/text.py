@@ -294,6 +294,12 @@ def pdf_text(path, folder, progress=lambda *args: None, *, ocr_page=None):
                     # The callback guards its MuPDF operations; the HTTP wait is unlocked.
                     text, detail, positions = ocr_page(page, i + 1, reasons, corner)
                     report['ocr_pages'].append(i + 1)
+            # OCR often includes the printed page number as its first line.
+            # Remove only an exact match at the page boundary, never numbers
+            # inside the body (which may be table values or legal content).
+            if reasons and i > 0 and text.lstrip().splitlines()[:1] == [str(i + 1)]:
+                text = '\n'.join(text.lstrip().splitlines()[1:]).lstrip()
+                detail = {**detail, 'removed_page_number': i + 1}
             output.append(text)
             details.append({'page': i + 1, **detail})
             if corner:

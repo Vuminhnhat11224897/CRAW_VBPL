@@ -100,6 +100,15 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(report['method'], 'ocr')
         self.assertEqual(report['ocr_pages'], [1, 2, 3])
 
+    def test_only_matching_leading_ocr_page_number_is_removed(self):
+        path = self.pdf(('native', 'scan', 'native'))
+        content = '2\n\n' + OCR_BODY + '\n17\n' + OCR_BODY
+        with patch.object(ocr, 'health'), patch.object(ocr, 'ocr_text', return_value=(content, {})):
+            text, report, _ = reader.read(path, self.root / 'page-number')
+        self.assertNotIn('\n2\n', text)
+        self.assertIn('\n17\n', text)
+        self.assertEqual(report['page_reports'][1]['removed_page_number'], 2)
+
     def test_cache_survives_new_reader_and_is_rechecked_against_source_record(self):
         path = self.pdf(('scan',))
         with patch.object(ocr, 'health'), patch.object(ocr, 'ocr_text', return_value=(OCR_BODY, {})), \

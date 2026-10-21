@@ -38,6 +38,7 @@ def authority_key(value):
     value=''.join(c for c in value if not unicodedata.combining(c))
     value=re.sub(r'\bubnd\b','uy ban nhan dan',value)
     value=re.sub(r'\bhdnd\b','hoi dong nhan dan',value)
+    value=re.sub(r'^ct (?=uy ban nhan dan\b)', 'chu tich ', value)
     value=re.sub(r'\s+',' ',value).strip()
     return ', '.join(sorted(part.strip() for part in value.split(',')))
 
@@ -45,6 +46,13 @@ def authority_key(value):
 def catalog_authority_key(value):
     value=authority_key(value)
     return re.sub(r'^(?:(?:chu tich )?(?:uy ban nhan dan|hoi dong nhan dan) )(?=(?:tinh|thanh pho|huyen|quan|thi xa|xa|phuong|thi tran) )','',value)
+
+
+def same_authority(left, right):
+    """Accept legacy catalog locality names, preserving explicitly different bodies."""
+    a, b = authority_key(left), authority_key(right)
+    ca, cb = catalog_authority_key(left), catalog_authority_key(right)
+    return a == b or (ca == cb and (a == ca or b == cb))
 
 
 def action_matches(text):

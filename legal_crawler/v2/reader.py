@@ -196,7 +196,9 @@ def read(path, folder, *, record=None, progress=lambda *args: None):
     key = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:24]
     cache = folder / 'ocr' / key
     cache.mkdir(parents=True, exist_ok=True)
-    text, report = pdf_text(path, folder, progress, ocr_page=PageOCR(cache, record))
+    from .reviewed_pages import reviewed_callback
+    callback = reviewed_callback(PageOCR(cache, record), folder, digest)
+    text, report = pdf_text(path, folder, progress, ocr_page=callback)
     positions = report.pop('date_pages')
     if record:
         from .ocr_identity import repair_header, verify
